@@ -294,6 +294,137 @@ def _add_core_compat(client: OPNsenseClientProtocol) -> OPNsenseClientProtocol:
     return client
 
 
+def _add_shaper_compat(client: OPNsenseClientProtocol) -> OPNsenseClientProtocol:
+    """Attach traffic shaper shims when the backend lacks native support.
+
+    Args:
+        client: Client instance to patch with shaper methods.
+
+    Returns:
+        OPNsenseClientProtocol: The same client instance with shaper compatibility methods.
+    """
+    if hasattr(client, "get_traffic_shaper"):
+        return client
+
+    safe_dict_get: Callable[[str], Any] | None = getattr(client, "_safe_dict_get", None)
+    safe_dict_post: Callable[..., Any] | None = getattr(client, "_safe_dict_post", None)
+    is_endpoint_available: Callable[[str], Any] | None = getattr(
+        client, "is_endpoint_available", None
+    )
+
+    async def _get_shaper_collection(endpoint: str) -> dict[str, Any]:
+        if safe_dict_get is None:
+            return {}
+        if is_endpoint_available is not None and not await is_endpoint_available(endpoint):
+            return {}
+        response = await safe_dict_get(endpoint)
+        if not isinstance(response, Mapping):
+            return {}
+        rows: list = response.get("rows", [])
+        result: dict[str, Any] = {}
+        for row in rows:
+            if not isinstance(row, MutableMapping):
+                continue
+            uuid = row.get("uuid")
+            if uuid:
+                result[str(uuid)] = dict(row)
+        return result
+
+    async def _get_traffic_shaper() -> dict[str, Any]:
+        return {
+            "pipes": await _get_shaper_collection("/api/trafficshaper/settings/search_pipes"),
+            "queues": await _get_shaper_collection("/api/trafficshaper/settings/search_queues"),
+            "rules": await _get_shaper_collection("/api/trafficshaper/settings/search_rules"),
+        }
+
+    async def _apply_shaper() -> bool:
+        if safe_dict_post is None:
+            return False
+        resp = await safe_dict_post("/api/trafficshaper/service/reconfigure")
+        _LOGGER.debug("[shaper_compat _apply_shaper] reconfigure response: %s", resp)
+        return isinstance(resp, Mapping) and resp.get("status", "").strip() == "ok"
+
+    async def _toggle_shaper(toggle_url: str) -> bool:
+        if safe_dict_post is None:
+            return False
+        resp = await safe_dict_post(toggle_url, payload={})
+        if isinstance(resp, Mapping) and resp.get("result") == "failed":
+            return False
+        return await _apply_shaper()
+
+    async def _toggle_shaper_pipe(uuid: str, toggle_on_off: str | None = None) -> bool:
+        url = f"/api/trafficshaper/settings/toggle_pipe/{uuid}"
+        if toggle_on_off == "on":
+            url = f"{url}/1"
+        elif toggle_on_off == "off":
+            url = f"{url}/0"
+        return await _toggle_shaper(url)
+
+    async def _toggle_shaper_queue(uuid: str, toggle_on_off: str | None = None) -> bool:
+        url = f"/api/trafficshaper/settings/toggle_queue/{uuid}"
+        if toggle_on_off == "on":
+            url = f"{url}/1"
+        elif toggle_on_off == "off":
+            url = f"{url}/0"
+        return await _toggle_shaper(url)
+
+    async def _toggle_shaper_rule(uuid: str, toggle_on_off: str | None = None) -> bool:
+        url = f"/api/trafficshaper/settings/toggle_rule/{uuid}"
+        if toggle_on_off == "on":
+            url = f"{url}/1"
+        elif toggle_on_off == "off":
+            url = f"{url}/0"
+        return await _toggle_shaper(url)
+
+    def _resolve_select_field(value: Any) -> Any:
+        """Flatten an OPNsense select field dict to its selected key."""
+        if not isinstance(value, Mapping):
+            return value
+        for key, option in value.items():
+            if isinstance(option, Mapping) and option.get("selected", 0) == 1:
+                return key
+        return next(iter(value), "")
+
+    async def _set_pipe_bandwidth(
+        uuid: str, bandwidth: int | float, bandwidthtype: str = "Mbit"
+    ) -> bool:
+        if safe_dict_get is None or safe_dict_post is None:
+            return False
+        current = await safe_dict_get(f"/api/trafficshaper/settings/get_pipe/{uuid}")
+        if not isinstance(current, Mapping):
+            return False
+        raw_pipe = current.get("pipe", {})
+        if not isinstance(raw_pipe, Mapping) or not raw_pipe:
+            _LOGGER.debug("[set_pipe_bandwidth] get_pipe returned empty pipe for uuid %s", uuid)
+            return False
+        # Flatten all select fields from {key: {value, selected}} to just the selected key
+        pipe: dict[str, Any] = {k: _resolve_select_field(v) for k, v in raw_pipe.items()}
+        # Update bandwidth — OPNsense expects an integer string
+        pipe["bandwidth"] = str(int(bandwidth))
+        # Handle both field name variants across OPNsense versions
+        if "bandwidthMetric" in pipe:
+            pipe["bandwidthMetric"] = bandwidthtype
+        else:
+            pipe["bandwidthtype"] = bandwidthtype
+        resp = await safe_dict_post(
+            f"/api/trafficshaper/settings/set_pipe/{uuid}", payload={"pipe": pipe}
+        )
+        _LOGGER.debug("[set_pipe_bandwidth] set_pipe response: %s", resp)
+        if isinstance(resp, Mapping) and resp.get("result") == "failed":
+            _LOGGER.debug("[set_pipe_bandwidth] set_pipe failed: %s", resp.get("validations"))
+            return False
+        return await _apply_shaper()
+
+    setattr(client, "get_traffic_shaper", _get_traffic_shaper)
+    setattr(client, "toggle_shaper_pipe", _toggle_shaper_pipe)
+    setattr(client, "toggle_shaper_queue", _toggle_shaper_queue)
+    setattr(client, "toggle_shaper_rule", _toggle_shaper_rule)
+    setattr(client, "set_pipe_bandwidth", _set_pipe_bandwidth)
+    _LOGGER.debug("Applied aiopnsense traffic shaper compatibility shims")
+
+    return client
+
+
 async def _create_external_client(**kwargs: Any) -> OPNsenseClientProtocol:
     """Create an external `aiopnsense` client instance.
 
@@ -327,7 +458,7 @@ async def _create_external_client(**kwargs: Any) -> OPNsenseClientProtocol:
                 "Unable to initialize external aiopnsense OPNsenseClient"
             ) from err
 
-    return _add_core_compat(_add_plugin_compat(_add_query_count_compat(client)))
+    return _add_shaper_compat(_add_core_compat(_add_plugin_compat(_add_query_count_compat(client))))
 
 
 async def create_opnsense_client(

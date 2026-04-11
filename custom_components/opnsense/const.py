@@ -19,6 +19,7 @@ UNDO_UPDATE_LISTENER = "undo_update_listener"
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
     Platform.SWITCH,
+    Platform.NUMBER,
     Platform.DEVICE_TRACKER,
     Platform.BINARY_SENSOR,
     Platform.UPDATE,
@@ -61,6 +62,7 @@ CONF_SYNC_FIREWALL_AND_NAT = "sync_filters_and_nat"
 CONF_SYNC_UNBOUND = "sync_unbound"
 CONF_SYNC_INTERFACES = "sync_interfaces"
 CONF_SYNC_CERTIFICATES = "sync_certificates"
+CONF_SYNC_TRAFFIC_SHAPER = "sync_traffic_shaper"
 CONF_GRANULAR_SYNC_OPTIONS = "granular_sync_options"
 
 DEFAULT_GRANULAR_SYNC_OPTIONS = False
@@ -81,6 +83,7 @@ GRANULAR_SYNC_ITEMS = (
     CONF_SYNC_UNBOUND,
     CONF_SYNC_VNSTAT,
     CONF_SYNC_SPEEDTEST,
+    CONF_SYNC_TRAFFIC_SHAPER,
 )
 GRANULAR_SYNC_PREFIX = {
     CONF_SYNC_CARP: ["carp"],
@@ -94,6 +97,7 @@ GRANULAR_SYNC_PREFIX = {
     CONF_SYNC_SERVICES: ["service"],
     CONF_SYNC_SPEEDTEST: ["speedtest"],
     CONF_SYNC_TELEMETRY: ["telemetry"],
+    CONF_SYNC_TRAFFIC_SHAPER: ["trafficshaper"],
     CONF_SYNC_UNBOUND: ["unbound"],
     CONF_SYNC_VNSTAT: ["vnstat"],
     CONF_SYNC_VPN: ["wireguard", "openvpn"],
@@ -344,3 +348,4 @@ SERVICE_KILL_STATES = "kill_states"
 SERVICE_TOGGLE_ALIAS = "toggle_alias"
 SERVICE_RUN_SPEEDTEST = "run_speedtest"
 SERVICE_GET_VNSTAT_METRICS = "get_vnstat_metrics"
+SERVICE_SET_PIPE_BANDWIDTH = "set_pipe_bandwidth"

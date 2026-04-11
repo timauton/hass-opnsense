@@ -206,6 +206,63 @@ class OPNsenseClientProtocol(Protocol):
             dict[str, Any]: vnStat metrics payload for the selected period.
         """
 
+    async def get_traffic_shaper(self) -> dict[str, Any]:
+        """Retrieve all traffic shaper pipes, queues, and rules.
+
+        Returns:
+            dict[str, Any]: Mapping with ``pipes``, ``queues``, and ``rules`` sub-dicts.
+        """
+
+    async def toggle_shaper_pipe(self, uuid: str, toggle_on_off: str | None = None) -> bool:
+        """Toggle or explicitly set a traffic shaper pipe enabled state.
+
+        Args:
+            uuid: Pipe UUID to modify.
+            toggle_on_off: Optional explicit target state (``on``/``off``).
+
+        Returns:
+            bool: `True` when the operation completed successfully.
+        """
+
+    async def toggle_shaper_queue(self, uuid: str, toggle_on_off: str | None = None) -> bool:
+        """Toggle or explicitly set a traffic shaper queue enabled state.
+
+        Args:
+            uuid: Queue UUID to modify.
+            toggle_on_off: Optional explicit target state (``on``/``off``).
+
+        Returns:
+            bool: `True` when the operation completed successfully.
+        """
+
+    async def toggle_shaper_rule(self, uuid: str, toggle_on_off: str | None = None) -> bool:
+        """Toggle or explicitly set a traffic shaper rule enabled state.
+
+        Args:
+            uuid: Rule UUID to modify.
+            toggle_on_off: Optional explicit target state (``on``/``off``).
+
+        Returns:
+            bool: `True` when the operation completed successfully.
+        """
+
+    async def set_pipe_bandwidth(
+        self,
+        uuid: str,
+        bandwidth: int | float,
+        bandwidthtype: str = "Mbit",
+    ) -> bool:
+        """Set the bandwidth of a traffic shaper pipe.
+
+        Args:
+            uuid: Pipe UUID to modify.
+            bandwidth: New bandwidth value.
+            bandwidthtype: Bandwidth unit — one of ``bit``, ``Kbit``, ``Mbit``, ``Gbit``.
+
+        Returns:
+            bool: `True` when the update and reconfigure completed successfully.
+        """
+
     async def toggle_alias(self, alias: str, toggle_on_off: str | None = None) -> bool:
         """Toggle or explicitly set firewall alias enabled state.
 

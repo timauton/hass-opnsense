@@ -25,6 +25,7 @@ from .const import (
     SERVICE_RESTART_SERVICE,
     SERVICE_RUN_SPEEDTEST,
     SERVICE_SEND_WOL,
+    SERVICE_SET_PIPE_BANDWIDTH,
     SERVICE_START_SERVICE,
     SERVICE_STOP_SERVICE,
     SERVICE_SYSTEM_HALT,
@@ -248,6 +249,23 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             }
         ),
         service_func=functools.partial(_service_toggle_alias, hass),
+    )
+
+    hass.services.async_register(
+        domain=DOMAIN,
+        service=SERVICE_SET_PIPE_BANDWIDTH,
+        schema=vol.Schema(
+            {
+                vol.Required("pipe"): cv.string,
+                vol.Required("bandwidth"): vol.Coerce(float),
+                vol.Optional("bandwidthtype", default="Mbit"): vol.In(
+                    ["bit", "Kbit", "Mbit", "Gbit"]
+                ),
+                vol.Optional("device_id"): vol.Any(cv.string),
+                vol.Optional("entity_id"): vol.Any(cv.string),
+            }
+        ),
+        service_func=functools.partial(_service_set_pipe_bandwidth, hass),
     )
 
 
@@ -718,3 +736,88 @@ async def _service_toggle_alias(hass: HomeAssistant, call: ServiceCall) -> None:
         raise ServiceValidationError(
             f"Toggle Alias Failed. alias: {call.data.get('alias')}, action: {call.data.get('toggle_on_off')}"
         )
+
+
+async def _service_set_pipe_bandwidth(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Handle the set pipe bandwidth service call.
+
+    Accepts a pipe description (name) or UUID. When a description is given the
+    full list of pipes is searched for a match before calling the client.
+
+    Args:
+        hass: Home Assistant instance that owns the integration state, entity registry, and services.
+        call: Service call payload received from Home Assistant.
+
+    Raises:
+        ServiceValidationError: If the pipe cannot be found or the update fails.
+    """
+    clients: list = await _get_clients(
+        hass=hass,
+        opndevice_id=call.data.get("device_id", []),
+        opnentity_id=call.data.get("entity_id", []),
+    )
+    pipe_id: str = call.data["pipe"]
+    bandwidth: float = call.data["bandwidth"]
+    bandwidthtype: str = call.data.get("bandwidthtype", "Mbit")
+    success: bool | None = None
+    for client in clients:
+        uuid = await _resolve_pipe_uuid(client, pipe_id)
+        if uuid is None:
+            _LOGGER.debug(
+                "[service_set_pipe_bandwidth] client: %s, pipe %r not found",
+                client.name,
+                pipe_id,
+            )
+            raise ServiceValidationError(
+                f"Set Pipe Bandwidth Failed. Pipe not found: {pipe_id!r}"
+            )
+        response = await client.set_pipe_bandwidth(uuid, bandwidth, bandwidthtype)
+        _LOGGER.debug(
+            "[service_set_pipe_bandwidth] client: %s, pipe: %s, uuid: %s, bandwidth: %s %s, response: %s",
+            client.name,
+            pipe_id,
+            uuid,
+            bandwidth,
+            bandwidthtype,
+            response,
+        )
+        if success is None or success:
+            success = response
+    if success is None or not success:
+        raise ServiceValidationError(
+            f"Set Pipe Bandwidth Failed. pipe: {pipe_id!r}, bandwidth: {bandwidth} {bandwidthtype}"
+        )
+
+
+async def _resolve_pipe_uuid(client: Any, pipe_id: str) -> str | None:
+    """Resolve a pipe description or UUID to a UUID.
+
+    Tries the value as a UUID directly first. If no exact UUID match is found in the
+    pipe list it falls back to searching by description (case-insensitive).
+
+    Args:
+        client: OPNsense client instance.
+        pipe_id: Pipe UUID or human-readable description.
+
+    Returns:
+        str | None: Resolved UUID when found; otherwise ``None``.
+    """
+    get_traffic_shaper = getattr(client, "get_traffic_shaper", None)
+    if get_traffic_shaper is None:
+        return None
+    shaper: dict[str, Any] = await get_traffic_shaper()
+    pipes: dict[str, Any] = shaper.get("pipes", {})
+    if not isinstance(pipes, MutableMapping):
+        return None
+    # Direct UUID match
+    if pipe_id in pipes:
+        return pipe_id
+    # Description match (case-insensitive)
+    pipe_id_lower = pipe_id.lower()
+    for uuid, pipe in pipes.items():
+        if not isinstance(pipe, MutableMapping):
+            continue
+        description = pipe.get("description", "")
+        if isinstance(description, str) and description.lower() == pipe_id_lower:
+            return uuid
+    return None

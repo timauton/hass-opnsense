@@ -8,6 +8,7 @@ from .services import ServicesMixin
 from .speedtest import SpeedtestMixin
 from .system import SystemMixin
 from .telemetry import TelemetryMixin
+from .trafficshaper import TrafficShaperMixin
 from .unbound import UnboundMixin
 from .vnstat import VnstatMixin
 from .vouchers import VouchersMixin
@@ -22,6 +23,7 @@ class OPNsenseClient(
     ServicesMixin,
     SpeedtestMixin,
     SystemMixin,
+    TrafficShaperMixin,
     UnboundMixin,
     VouchersMixin,
     TelemetryMixin,
