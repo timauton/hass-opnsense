@@ -42,6 +42,7 @@ A Discord server to discuss the integration is available. Click the Discord badg
   * [Binary Sensor](#binary-sensor)
   * [Sensor](#sensor)
   * [Switch](#switch)
+  * [Number](#number)
   * [Device Tracker](#device-tracker)
   * [CARP VIP Entities and Limitations](#carp-vip-entities-and-limitations)
 
@@ -178,6 +179,13 @@ Many entities are created by `hass-opnsense` for statistics etc. Due to the volu
 * Services - start/stop services
 * VPN Servers and Clients - enable/disable instances
 * Unbound blocklists - enable/disable blocklists
+* Traffic Shaper Pipes - enable/disable pipes *(disabled by default)*
+* Traffic Shaper Queues - enable/disable queues *(disabled by default)*
+* Traffic Shaper Rules - enable/disable rules *(disabled by default)*
+
+### Number
+
+* **Traffic Shaper Pipe Bandwidth** - set the bandwidth of a traffic shaper pipe directly from HA or an automation. One entity is created per pipe, using the pipe's configured unit (Mbit/s, Kbit/s, etc.).
 
 ### Device Tracker
 
@@ -220,6 +228,13 @@ The persistent CARP maintenance switch remains on physical-node entries. Enablin
 * **opnsense.get_vnstat_metrics:** Get vnStat metrics and return action response data
 * **opnsense.generate_vouchers:** Generate Captive Portal vouchers
 * **opnsense.toggle_alias:** Toggle, enable, or disable an alias
+* **opnsense.set_pipe_bandwidth:** Set the bandwidth of a traffic shaper pipe by name or UUID
+
+  | Parameter | Required | Description |
+  | --- | :---: | --- |
+  | `pipe` | ✅ | Pipe description (name) or UUID |
+  | `bandwidth` | ✅ | New bandwidth value (numeric) |
+  | `bandwidthtype` | | Unit: `bit`, `Kbit`, `Mbit` *(default)*, or `Gbit` | 
 
 [How to use <ins>action response data</ins> in an HA script or automation](https://www.home-assistant.io/docs/scripts/perform-actions/#use-templates-to-handle-response-data)
 
