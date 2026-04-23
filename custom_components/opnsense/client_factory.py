@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping, MutableMapping
+from datetime import datetime
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version as package_version
+import inspect
 import logging
 from typing import Any
 
@@ -108,6 +110,80 @@ def _coerce_query_counts(count_value: Any) -> tuple[int, int]:
     return (0, 0)
 
 
+def _callable_accepts_parameter(method: Callable[..., Any], parameter_name: str) -> bool:
+    """Report whether a callable accepts the named keyword argument.
+
+    Uses `inspect.signature` first, then falls back to direct `__code__` attribute
+    inspection when signature introspection is unavailable (e.g. for certain
+    Python 3.14+ coroutine patterns).  Returns `False` when neither approach can
+    determine the callable's parameter list, so callers apply a compatibility
+    wrapper rather than risk an unexpected-keyword-argument error at runtime.
+
+    Args:
+        method: Callable to inspect for keyword compatibility.
+        parameter_name: Keyword parameter name to check.
+
+    Returns:
+        bool: `True` when `method` accepts the parameter or arbitrary keyword arguments.
+    """
+    try:
+        signature = inspect.signature(method)
+
+        if parameter_name in signature.parameters:
+            return (
+                signature.parameters[parameter_name].kind is not inspect.Parameter.POSITIONAL_ONLY
+            )
+        return any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+    except TypeError, ValueError:
+        pass
+
+    # Fallback: inspect the underlying code object directly.  This avoids
+    # annotation-evaluation issues that can cause inspect.signature() to raise
+    # in Python 3.14+ with certain coroutine or mixin patterns.
+    try:
+        func: Any = getattr(method, "__func__", method)
+        while hasattr(func, "__wrapped__"):
+            func = func.__wrapped__
+        code = func.__code__
+        nparams: int = code.co_argcount + code.co_kwonlyargcount
+        if parameter_name in code.co_varnames[code.co_posonlyargcount : nparams]:
+            return True
+        return bool(code.co_flags & inspect.CO_VARKEYWORDS)
+    except AttributeError:
+        pass
+
+    # Cannot determine the signature; conservatively assume the parameter is
+    # absent so the caller wraps the method instead of risking a TypeError.
+    return False
+
+
+def _type_error_is_unexpected_parameter(err: TypeError, parameter_name: str) -> bool:
+    """Report whether a TypeError was raised by keyword argument binding.
+
+    Args:
+        err: TypeError raised while attempting a compatibility call.
+        parameter_name: Keyword parameter name that was passed.
+
+    Returns:
+        bool: `True` when the error indicates the callable rejected the keyword.
+    """
+    if err.__traceback__ is None or err.__traceback__.tb_next is not None:
+        return False
+
+    message = str(err)
+    return (
+        ("unexpected keyword argument" in message and parameter_name in message)
+        or (
+            "positional-only arguments passed as keyword arguments" in message
+            and parameter_name in message
+        )
+        or "takes no keyword arguments" in message
+    )
+
+
 def _add_query_count_compat(client: OPNsenseClientProtocol) -> OPNsenseClientProtocol:
     """Attach query-count compatibility wrappers for backend differences.
 
@@ -169,6 +245,16 @@ def _add_plugin_compat(client: OPNsenseClientProtocol) -> OPNsenseClientProtocol
         )
         get_firmware_info: Callable[[], Any] | None = getattr(client, "get_firmware_info", None)
         safe_dict_get: Callable[[str], Any] | None = getattr(client, "_safe_dict_get", None)
+        installed_plugins_cache: set[str] | None = None
+        installed_plugins_updated_at: datetime | None = None
+        installed_plugins_refresh_succeeded = False
+        plugin_cache_ttl_seconds = int(
+            getattr(
+                client,
+                "_plugin_cache_ttl_seconds",
+                getattr(client, "_endpoint_cache_ttl_seconds", 6 * 60 * 60),
+            )
+        )
 
         async def _is_plugin_installed() -> bool:
             """Detect whether the Home Assistant OPNsense plugin is installed.
@@ -177,56 +263,91 @@ def _add_plugin_compat(client: OPNsenseClientProtocol) -> OPNsenseClientProtocol
                 bool: `True` when `os-homeassistant-maxit` is present, otherwise `False`.
             """
 
-            def _plugin_present_from_payload(payload: Any) -> bool:
-                """Determine plugin presence from a backend payload.
+            nonlocal installed_plugins_cache
+            nonlocal installed_plugins_updated_at
+            nonlocal installed_plugins_refresh_succeeded
+
+            def _installed_plugins_from_payload(payload: Any) -> set[str] | None:
+                """Extract installed plugin names from a backend payload.
 
                 Args:
                     payload: Firmware or plugin payload returned by backend helper methods.
 
                 Returns:
-                    bool: `True` if the payload indicates the plugin is installed.
+                    set[str] | None: Installed plugin names, or `None` when payload is invalid.
                 """
                 if isinstance(payload, Mapping):
-                    if "os-homeassistant-maxit" in payload:
-                        return True
                     package_list = payload.get("package")
                     if isinstance(package_list, list):
+                        installed_plugins: set[str] = set()
                         for pkg in package_list:
+                            name = pkg.get("name") if isinstance(pkg, Mapping) else None
                             if (
                                 isinstance(pkg, Mapping)
-                                and pkg.get("name") == "os-homeassistant-maxit"
+                                and isinstance(name, str)
                                 and str(pkg.get("installed")) == "1"
                             ):
-                                return True
-                    return False
+                                installed_plugins.add(name)
+                        return installed_plugins
+                    if "os-homeassistant-maxit" in payload:
+                        return {str(key) for key in payload}
+                    return None
                 if isinstance(payload, list | set | tuple):
+                    installed_plugins = set()
                     for item in payload:
-                        if item == "os-homeassistant-maxit":
-                            return True
+                        if isinstance(item, str):
+                            installed_plugins.add(item)
                         if (
                             isinstance(item, Mapping)
-                            and item.get("name") == "os-homeassistant-maxit"
+                            and isinstance(item.get("name"), str)
                             and str(item.get("installed")) == "1"
                         ):
-                            return True
-                return False
+                            installed_plugins.add(item["name"])
+                    return installed_plugins
+                return None
 
-            if is_named_plugin_installed is not None:
-                result = await is_named_plugin_installed("os-homeassistant-maxit")
-                return bool(result)
-            if get_installed_plugins is not None:
-                plugins = await get_installed_plugins()
-                if _plugin_present_from_payload(plugins):
-                    return True
-            if get_firmware_info is not None:
-                firmware_info = await get_firmware_info()
-                if _plugin_present_from_payload(firmware_info):
-                    return True
-            if safe_dict_get is not None:
-                firmware_info = await safe_dict_get("/api/core/firmware/info")
-                if _plugin_present_from_payload(firmware_info):
-                    return True
-            return False
+            async def _refresh_installed_plugins() -> None:
+                """Refresh plugin names using the best available compatibility source."""
+                nonlocal installed_plugins_cache
+                nonlocal installed_plugins_updated_at
+                nonlocal installed_plugins_refresh_succeeded
+
+                now = datetime.now().astimezone()
+                cache_is_fresh = (
+                    installed_plugins_refresh_succeeded
+                    and installed_plugins_cache is not None
+                    and installed_plugins_updated_at is not None
+                    and (now - installed_plugins_updated_at).total_seconds()
+                    < plugin_cache_ttl_seconds
+                )
+                if cache_is_fresh:
+                    return
+
+                payload: Any | None = None
+                if is_named_plugin_installed is not None:
+                    installed = await is_named_plugin_installed("os-homeassistant-maxit")
+                    installed_plugins_cache = {"os-homeassistant-maxit"} if installed else set()
+                    installed_plugins_updated_at = now
+                    installed_plugins_refresh_succeeded = True
+                    return
+                if get_installed_plugins is not None:
+                    payload = await get_installed_plugins()
+                elif get_firmware_info is not None:
+                    payload = await get_firmware_info()
+                elif safe_dict_get is not None:
+                    payload = await safe_dict_get("/api/core/firmware/info")
+
+                installed_plugins = _installed_plugins_from_payload(payload)
+                if installed_plugins is None:
+                    installed_plugins_refresh_succeeded = False
+                    return
+
+                installed_plugins_cache = installed_plugins
+                installed_plugins_updated_at = now
+                installed_plugins_refresh_succeeded = True
+
+            await _refresh_installed_plugins()
+            return "os-homeassistant-maxit" in (installed_plugins_cache or set())
 
         setattr(client, "is_plugin_installed", _is_plugin_installed)
         _LOGGER.debug("Applied aiopnsense plugin compatibility shim for is_plugin_installed()")
@@ -256,7 +377,8 @@ def _add_core_compat(client: OPNsenseClientProtocol) -> OPNsenseClientProtocol:
     Returns:
         OPNsenseClientProtocol: The same client instance with required core compatibility shims.
     """
-    if not hasattr(client, "set_use_snake_case"):
+    set_use_snake_case: Callable[..., Any] | None = getattr(client, "set_use_snake_case", None)
+    if set_use_snake_case is None:
 
         async def _set_use_snake_case(initial: bool = False) -> None:
             """Provide a no-op naming-mode setter for backends without support.
@@ -268,6 +390,25 @@ def _add_core_compat(client: OPNsenseClientProtocol) -> OPNsenseClientProtocol:
 
         setattr(client, "set_use_snake_case", _set_use_snake_case)
         _LOGGER.debug("Applied aiopnsense core compatibility shim for set_use_snake_case()")
+    elif not _callable_accepts_parameter(set_use_snake_case, "initial"):
+
+        async def _set_use_snake_case_with_initial(initial: bool = False) -> None:
+            """Call a backend naming-mode setter with compatibility fallback.
+
+            Args:
+                initial: Whether the call occurs during initial setup.
+            """
+            try:
+                await set_use_snake_case(initial=initial)
+            except TypeError as err:
+                if not _type_error_is_unexpected_parameter(err, "initial"):
+                    raise
+                await set_use_snake_case()
+
+        setattr(client, "set_use_snake_case", _set_use_snake_case_with_initial)
+        _LOGGER.debug(
+            "Applied aiopnsense core compatibility wrapper for set_use_snake_case(initial=...)"
+        )
 
     if not hasattr(client, "reset_query_counts"):
 

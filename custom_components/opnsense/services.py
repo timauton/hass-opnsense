@@ -32,7 +32,7 @@ from .const import (
     SERVICE_SYSTEM_REBOOT,
     SERVICE_TOGGLE_ALIAS,
 )
-from .pyopnsense import VoucherServerError
+from .pyopnsense import OPNsenseVoucherServerError
 
 _LOGGER: logging.Logger = logging.getLogger(__name__)
 _VNSTAT_PERIODS: tuple[str, ...] = ("hourly", "daily", "monthly", "yearly")
@@ -567,7 +567,7 @@ async def _service_generate_vouchers(hass: HomeAssistant, call: ServiceCall) -> 
     for client in clients:
         try:
             vouchers: list = await client.generate_vouchers(call.data)
-        except VoucherServerError as e:
+        except OPNsenseVoucherServerError as e:
             _LOGGER.error("Error getting vouchers from %s. %s", client.name, e)
             raise ServiceValidationError(f"Error getting vouchers from {client.name}. {e}") from e
         _LOGGER.debug(
