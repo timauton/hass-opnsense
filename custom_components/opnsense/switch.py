@@ -632,6 +632,54 @@ async def _compile_shaper_switches(
     return entities
 
 
+async def _compile_shaper_switches(
+    config_entry: ConfigEntry,
+    coordinator: OPNsenseDataUpdateCoordinator,
+    state: MutableMapping[str, Any],
+) -> list:
+    """Compile traffic shaper switches for pipes, queues, and rules.
+
+    Args:
+        config_entry: The Home Assistant config entry.
+        coordinator: The data update coordinator.
+        state: The current state data from OPNsense.
+
+    Returns:
+        list: A list of OPNsenseShaperSwitch entities.
+    """
+    if not isinstance(state, MutableMapping):
+        return []
+    shaper = state.get("traffic_shaper", {})
+    if not isinstance(shaper, MutableMapping):
+        return []
+    entities: list = []
+    type_config = {
+        "pipe": ("pipes", "mdi:pipe", "Shaper Pipe"),
+        "queue": ("queues", "mdi:queue-first-in-first-out", "Shaper Queue"),
+        "rule": ("rules", "mdi:traffic-light-outline", "Shaper Rule"),
+    }
+    for shaper_type, (collection_key, icon, label_prefix) in type_config.items():
+        for uuid, item in shaper.get(collection_key, {}).items():
+            if not isinstance(item, MutableMapping):
+                continue
+            description = item.get("description", uuid)
+            entities.append(
+                OPNsenseShaperSwitch(
+                    config_entry=config_entry,
+                    coordinator=coordinator,
+                    entity_description=SwitchEntityDescription(
+                        key=f"trafficshaper.{shaper_type}.{uuid}",
+                        name=f"{label_prefix} {description}",
+                        icon=icon,
+                        device_class=SwitchDeviceClass.SWITCH,
+                        entity_registry_enabled_default=False,
+                    ),
+                )
+            )
+    _LOGGER.debug("[compile_shaper_switches] entities: %s", len(entities))
+    return entities
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -734,6 +782,9 @@ async def async_setup_entry(
                 reconciliation_complete = False
         else:
             reconciliation_complete = False
+
+    if config.get(CONF_SYNC_TRAFFIC_SHAPER, DEFAULT_SYNC_OPTION_VALUE):
+        entities.extend(await _compile_shaper_switches(config_entry, coordinator, state))
 
     if config.get(CONF_SYNC_TRAFFIC_SHAPER, DEFAULT_SYNC_OPTION_VALUE):
         entities.extend(await _compile_shaper_switches(config_entry, coordinator, state))
